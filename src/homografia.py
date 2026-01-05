@@ -1,23 +1,28 @@
 import cv2
 import numpy as np
 
-def estimar_homografia_ransac(kps_pl, kps_fr, matches, reproj_thresh=3.0):
-    """
-    Estima la homografía usando RANSAC.
-    Retorna:
-      - H: matriz 3x3 o None
-      - mascara_inliers: array booleano (len(matches)) o None
-    """
-    if len(matches) < 4:
+def estimar_homografia_ransac(puntos_clave_plantilla, puntos_clave_frame, coincidencias, umbral_reproyeccion=3.0):
+    #Estima la homografía usando RANSAC y devuelve la matriz H y la máscara de inliers
+    if len(coincidencias) < 4:
         return None, None
 
-    pts_pl = np.float32([kps_pl[m.queryIdx].pt for m in matches]).reshape(-1, 1, 2)
-    pts_fr = np.float32([kps_fr[m.trainIdx].pt for m in matches]).reshape(-1, 1, 2)
+    puntos_plantilla = np.float32(
+        [puntos_clave_plantilla[m.queryIdx].pt for m in coincidencias]
+    ).reshape(-1, 1, 2)
 
-    H, mask = cv2.findHomography(pts_pl, pts_fr, cv2.RANSAC, reproj_thresh)
+    puntos_frame = np.float32(
+        [puntos_clave_frame[m.trainIdx].pt for m in coincidencias]
+    ).reshape(-1, 1, 2)
 
-    if H is None or mask is None:
+    matriz_homografia, mascara = cv2.findHomography(
+        puntos_plantilla,
+        puntos_frame,
+        cv2.RANSAC,
+        umbral_reproyeccion
+    )
+
+    if matriz_homografia is None or mascara is None:
         return None, None
 
-    mascara_inliers = mask.astype(bool).reshape(-1)
-    return H, mascara_inliers
+    mascara_inliers = mascara.astype(bool).reshape(-1)
+    return matriz_homografia, mascara_inliers
