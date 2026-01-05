@@ -18,6 +18,14 @@ def parsear_argumentos():
     parser.add_argument("--max_ancho", type=int, default=960, help="Ancho máximo para acelerar")
     parser.add_argument("--min_inliers", type=int, default=18, help="Mínimo de inliers para aceptar detección")
     parser.add_argument("--ratio", type=float, default=0.75, help="Ratio test para filtrar coincidencias")
+
+    #Control de backend para webcam en Windows
+    parser.add_argument("--backend", choices=["auto", "msmf", "dshow", "any"], default="auto",
+                        help="Backend de captura (Windows): auto/msmf/dshow/any")
+    parser.add_argument("--ancho_cam", type=int, default=1280, help="Ancho deseado para la cámara")
+    parser.add_argument("--alto_cam", type=int, default=720, help="Alto deseado para la cámara")
+    parser.add_argument("--frames_prueba", type=int, default=20,
+                        help="Cantidad de frames para validar si la cámara entrega imagen real")
     return parser.parse_args()
 
 def preparar_plantilla(ruta_plantilla):
@@ -41,6 +49,58 @@ def preparar_plantilla(ruta_plantilla):
     ]).reshape(-1, 1, 2)
 
     return puntos_clave_pl, descriptores_pl, esquinas_plantilla
+
+def frame_es_valido(frame):
+    #Valida que el frame tenga datos reales y no sea vacío/verde
+    if frame is None:
+        return False
+    if frame.size == 0:
+        return False
+    if len(frame.shape) != 3:
+        return False
+    if frame.shape[0] < 10 or frame.shape[1] < 10:
+        return False
+    return True
+
+def abrir_camara(args):
+    #Abre la cámara intentando distintos backends y validando frames reales
+    mapa_backend = {
+        "msmf": cv2.CAP_MSMF,
+        "dshow": cv2.CAP_DSHOW,
+        "any": cv2.CAP_ANY
+    }
+
+    if args.backend != "auto":
+        lista_backends = [mapa_backend[args.backend]]
+    else:
+        #Orden recomendado para Windows con cámaras virtuales (DroidCam suele ir mejor con MSMF)
+        lista_backends = [cv2.CAP_MSMF, cv2.CAP_DSHOW, cv2.CAP_ANY]
+
+    for backend in lista_backends:
+        cap = cv2.VideoCapture(args.cam, backend)
+
+        if not cap.isOpened():
+            cap.release()
+            continue
+
+        #Forzar resolución (a veces arregla “pantalla verde”)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, args.ancho_cam)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.alto_cam)
+
+        #Leer varios frames para estabilizar y comprobar que hay imagen real
+        frame_ok = False
+        for _ in range(args.frames_prueba):
+            ok, frame = cap.read()
+            if ok and frame_es_valido(frame):
+                frame_ok = True
+                break
+
+        if frame_ok:
+            return cap
+
+        cap.release()
+
+    return None
 
 def procesar_frame(frame_bgr, puntos_clave_pl, descriptores_pl, esquinas_plantilla, overlay_bgr, args):
     #Procesa un frame: detecta plantilla y aplica AR si hay detección válida
@@ -66,11 +126,25 @@ def procesar_frame(frame_bgr, puntos_clave_pl, descriptores_pl, esquinas_plantil
         contorno = cv2.perspectiveTransform(esquinas_plantilla, matriz_h)
         cv2.polylines(frame_salida, [np.int32(contorno)], True, (0, 255, 0), 2)
         frame_salida = aplicar_overlay_ar(frame_salida, overlay_bgr, contorno)
-        cv2.putText(frame_salida, f"coincidencias:{len(coincidencias)} inliers:{num_inliers} DETECTADO",
-                    (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        cv2.putText(
+            frame_salida,
+            f"coincidencias:{len(coincidencias)} inliers:{num_inliers} DETECTADO",
+            (10, 28),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (0, 255, 0),
+            2
+        )
     else:
-        cv2.putText(frame_salida, f"coincidencias:{len(coincidencias)} inliers:{num_inliers} NO_DETECTADO",
-                    (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        cv2.putText(
+            frame_salida,
+            f"coincidencias:{len(coincidencias)} inliers:{num_inliers} NO_DETECTADO",
+            (10, 28),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (0, 0, 255),
+            2
+        )
 
     return frame_salida, num_inliers, len(coincidencias)
 
@@ -105,14 +179,16 @@ def main():
         cv2.destroyAllWindows()
         return
 
-    cap = cv2.VideoCapture(args.cam)
-    if not cap.isOpened():
-        raise RuntimeError("No se pudo abrir la cámara.")
+    cap = abrir_camara(args)
+    if cap is None:
+        raise RuntimeError("No se pudo abrir la cámara (no entrega frames válidos).")
 
     while True:
         ok, frame = cap.read()
-        if not ok:
-            break
+        if not ok or not frame_es_valido(frame):
+            #Si DroidCam entrega frames inválidos, evitamos que se quede en verde
+            cv2.waitKey(1)
+            continue
 
         salida, _, _ = procesar_frame(
             frame,
